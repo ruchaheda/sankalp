@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Music, Heart, CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { Music, Heart, CheckCircle, AlertCircle, Loader, Download, Upload } from 'lucide-react';
 
-const API_BASE = 'https://rucha.zo.space';
+// GitHub raw content URL for reading sessions
+const GITHUB_REPO = 'ruchaheda/sankalp';
+const SESSIONS_FILE_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/data/sessions.json`;
 
 const theme = {
   background: 'linear-gradient(135deg, #FFF5F7 0%, #F0E6FF 50%, #E0F4FF 100%)',
@@ -66,13 +68,25 @@ export default function App() {
 
   const fetchRecentSessions = async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/recent-sessions`);
+      // Try to fetch from GitHub first
+      const response = await fetch(SESSIONS_FILE_URL);
       if (response.ok) {
         const data = await response.json();
         setRecentSessions(data.sessions || []);
+        return;
       }
     } catch (err) {
-      console.error('Failed to load recent sessions:', err);
+      console.error('Failed to load from GitHub:', err);
+    }
+
+    // Fall back to localStorage
+    try {
+      const stored = localStorage.getItem('sankalp_sessions');
+      if (stored) {
+        setRecentSessions(JSON.parse(stored));
+      }
+    } catch (err) {
+      console.error('Failed to load from localStorage:', err);
     } finally {
       setLoadingRecent(false);
     }
@@ -83,29 +97,58 @@ export default function App() {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
+  const exportToJSON = () => {
+    const sessions = JSON.parse(localStorage.getItem('sankalp_sessions') || '[]');
+    const dataStr = JSON.stringify({ sessions }, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `sankalp-backup-${new Date().toISOString().split('T')[0]}.json`;
+    link.click();
+  };
+
+  const importFromJSON = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target?.result as string);
+        const sessions = data.sessions || [];
+        localStorage.setItem('sankalp_sessions', JSON.stringify(sessions));
+        fetchRecentSessions();
+        setMessages({
+          sheets: { type: 'success', message: '✅ Data imported successfully' },
+          forms: null,
+        });
+      } catch (err) {
+        console.error('Import error:', err);
+        setMessages({
+          sheets: { type: 'error', message: '❌ Failed to import file' },
+          forms: null,
+        });
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setMessages({ sheets: null, forms: null });
 
     try {
-      const response = await fetch(`${API_BASE}/api/submit-practice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      });
-
-      if (!response.ok) throw new Error('Failed to submit');
-
-      const result = await response.json();
+      // Save to localStorage
+      const newSession: Session = formData as Session;
+      const existing = JSON.parse(localStorage.getItem('sankalp_sessions') || '[]') as Session[];
+      const updated = [newSession, ...existing];
+      localStorage.setItem('sankalp_sessions', JSON.stringify(updated));
 
       setMessages({
-        sheets: result.sheetsSubmitted !== false
-          ? { type: 'success', message: '✅ Successfully logged to Google Sheets' }
-          : { type: 'error', message: '❌ Failed to log to Google Sheets' },
-        forms: result.formsSubmitted !== false
-          ? { type: 'success', message: '✅ Successfully submitted to Google Form' }
-          : { type: 'error', message: result.formsError ? `❌ Form error: ${result.formsError}` : '❌ Failed to submit to Google Form' },
+        sheets: { type: 'success', message: '✅ Saved locally to your device' },
+        forms: { type: 'success', message: '✅ Ready to sync to GitHub' },
       });
 
       setFormData({
@@ -122,8 +165,8 @@ export default function App() {
     } catch (err) {
       console.error('Submission error:', err);
       setMessages({
-        sheets: { type: 'error', message: '❌ Submission failed' },
-        forms: { type: 'error', message: '❌ Submission failed' },
+        sheets: { type: 'error', message: '❌ Failed to save' },
+        forms: { type: 'error', message: '❌ Failed to save' },
       });
     } finally {
       setLoading(false);
@@ -317,6 +360,28 @@ export default function App() {
             <p className="text-center mt-6 text-sm" style={{ color: theme.textDark }}>
               Keep practicing! Every session counts. 🌟
             </p>
+
+            {/* Data Management Buttons */}
+            <div className="mt-6 flex gap-3 justify-center flex-wrap">
+              <button
+                onClick={exportToJSON}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white transition-all hover:shadow-lg"
+                style={{ background: theme.accentPurple }}
+              >
+                <Download className="w-4 h-4" />
+                Export
+              </button>
+              <label className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white transition-all hover:shadow-lg cursor-pointer" style={{ background: theme.accentPink }}>
+                <Upload className="w-4 h-4" />
+                Import
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={importFromJSON}
+                  className="hidden"
+                />
+              </label>
+            </div>
           </div>
 
           {/* Recent Sessions Sidebar */}

@@ -1,0 +1,29 @@
+name: Manual Sync Sessions to GitHub
+
+on:
+  workflow_dispatch:
+    inputs:
+      sessions_json:
+        description: 'Paste your exported sessions.json content here'
+        required: true
+        type: string
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update sessions.json
+        run: |
+          echo '${{ inputs.sessions_json }}' > data/sessions.json
+
+      - name: Commit changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/sessions.json
+          git commit -m "Sync: Update practice sessions" || echo "No changes to commit"
+          git push
