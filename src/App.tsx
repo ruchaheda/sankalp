@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Music, Heart, CheckCircle, AlertCircle, Loader, Download, Upload } from 'lucide-react';
 
-// GitHub raw content URL for reading sessions
-const GITHUB_REPO = 'ruchaheda/sankalp';
-const SESSIONS_FILE_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/data/sessions.json`;
+const ZO_API = 'https://rucha.zo.space';
+const CACHE_KEY = 'sankalp_sessions_cache';
 
 const theme = {
   background: 'linear-gradient(135deg, #FFF5F7 0%, #F0E6FF 50%, #E0F4FF 100%)',
@@ -68,28 +67,25 @@ export default function App() {
 
   const fetchRecentSessions = async () => {
     try {
-      // Try to fetch from GitHub first
-      const response = await fetch(SESSIONS_FILE_URL);
+      const response = await fetch(`${ZO_API}/api/recent-sessions`);
       if (response.ok) {
         const data = await response.json();
-        setRecentSessions(data.sessions || []);
+        const sessions = data.sessions || [];
+        setRecentSessions(sessions);
+        localStorage.setItem(CACHE_KEY, JSON.stringify(sessions));
         return;
       }
-    } catch (err) {
-      console.error('Failed to load from GitHub:', err);
-    }
-
-    // Fall back to localStorage
-    try {
-      const stored = localStorage.getItem('sankalp_sessions');
-      if (stored) {
-        setRecentSessions(JSON.parse(stored));
-      }
-    } catch (err) {
-      console.error('Failed to load from localStorage:', err);
+    } catch {
+      // Zo is offline — fall through to cache
     } finally {
       setLoadingRecent(false);
     }
+
+    // Fall back to last-known sessions from cache
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) setRecentSessions(JSON.parse(cached));
+    } catch { /* ignore */ }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -140,37 +136,45 @@ export default function App() {
     setMessages({ sheets: null, forms: null });
 
     try {
-      // Save to localStorage
-      const newSession: Session = formData as Session;
-      const existing = JSON.parse(localStorage.getItem('sankalp_sessions') || '[]') as Session[];
-      const updated = [newSession, ...existing];
-      localStorage.setItem('sankalp_sessions', JSON.stringify(updated));
+      const response = await fetch(`${ZO_API}/api/submit-practice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      });
 
+      if (response.ok) {
+        const result = await response.json();
+        setMessages({
+          sheets: result.sheetsSubmitted !== false
+            ? { type: 'success', message: '✅ Logged to Google Sheets' }
+            : { type: 'error', message: '❌ Failed to log to Google Sheets' },
+          forms: result.formsSubmitted !== false
+            ? { type: 'success', message: '✅ Submitted to Google Form' }
+            : { type: 'error', message: result.formsError ? `❌ ${result.formsError}` : '❌ Failed to submit to Google Form' },
+        });
+      } else {
+        throw new Error('Non-OK response');
+      }
+    } catch {
+      // Zo is offline — save locally so data isn't lost
       setMessages({
-        sheets: { type: 'success', message: '✅ Saved locally to your device' },
-        forms: { type: 'success', message: '✅ Ready to sync to GitHub' },
+        sheets: { type: 'error', message: '📴 Zo offline — saved locally on this device' },
+        forms: null,
       });
-
-      setFormData({
-        date: new Date().toISOString().split('T')[0],
-        minutes: '',
-        whatPracticed: '',
-        sankalp: '',
-        raag: '',
-        omkarTime: '',
-        alankarTime: '',
-      });
-
-      fetchRecentSessions();
-    } catch (err) {
-      console.error('Submission error:', err);
-      setMessages({
-        sheets: { type: 'error', message: '❌ Failed to save' },
-        forms: { type: 'error', message: '❌ Failed to save' },
-      });
-    } finally {
-      setLoading(false);
     }
+
+    setFormData({
+      date: new Date().toISOString().split('T')[0],
+      minutes: '',
+      whatPracticed: '',
+      sankalp: '',
+      raag: '',
+      omkarTime: '',
+      alankarTime: '',
+    });
+
+    setLoading(false);
+    fetchRecentSessions();
   };
 
   return (
