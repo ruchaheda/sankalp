@@ -9,8 +9,9 @@ echo "Deploying to gh-pages..."
 cd dist
 git init --quiet || true
 git remote add origin https://github.com/ruchaheda/sankalp.git 2>/dev/null || true
+git remote set-url origin https://github.com/ruchaheda/sankalp.git
 git fetch origin gh-pages --quiet 2>/dev/null || true
-git checkout -b gh-pages --track origin/gh-pages --quiet 2>/dev/null || git checkout -b gh-pages --quiet
+git checkout gh-pages --quiet 2>/dev/null || git checkout -b gh-pages --track origin/gh-pages --quiet 2>/dev/null || git checkout -b gh-pages --quiet
 touch .nojekyll
 git add .
 git commit -m "Deploy: $(date '+%Y-%m-%d %H:%M')" --quiet || echo "No changes"
