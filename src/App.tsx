@@ -1,36 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Music, Heart, CheckCircle, AlertCircle, Loader, Download, Upload } from 'lucide-react';
+import {
+  appendToGoogleSheet,
+  googleConfig,
+  submitGoogleForm,
+  type FormData,
+  type Session,
+} from './googleSubmission';
 
 const LOCAL_SESSIONS_KEY = 'sankalp_sessions';
-const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
-const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
-
-const googleConfig = {
-  clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
-  spreadsheetId: import.meta.env.VITE_GOOGLE_SPREADSHEET_ID || '',
-  sheetRange: import.meta.env.VITE_GOOGLE_SHEET_RANGE || 'Sessions!A:G',
-  formActionUrl: import.meta.env.VITE_GOOGLE_FORM_ACTION_URL || '',
-  formProfile: {
-    mksmNumber: import.meta.env.VITE_GOOGLE_FORM_MKSM_NUMBER || '',
-    firstName: import.meta.env.VITE_GOOGLE_FORM_FIRST_NAME || '',
-    lastName: import.meta.env.VITE_GOOGLE_FORM_LAST_NAME || '',
-    email: import.meta.env.VITE_GOOGLE_FORM_EMAIL || '',
-    batchName: import.meta.env.VITE_GOOGLE_FORM_BATCH_NAME || '',
-  },
-  formFields: {
-    mksmNumber: 'entry.1742760532',
-    firstName: 'entry.1992748701',
-    lastName: 'entry.1182588695',
-    email: 'entry.1838437624',
-    batchName: 'entry.2040019182',
-    dateYear: 'entry.737772668_year',
-    dateMonth: 'entry.737772668_month',
-    dateDay: 'entry.737772668_day',
-    minutes: 'entry.1586397793',
-    whatPracticed: 'entry.193868850',
-    sankalp: 'entry.1865891008',
-  },
-};
 
 const theme = {
   background: 'linear-gradient(135deg, #FFF5F7 0%, #F0E6FF 50%, #E0F4FF 100%)',
@@ -45,50 +23,9 @@ const theme = {
   textDark: '#5A4A6B',
 };
 
-interface FormData {
-  date: string;
-  minutes: string;
-  whatPracticed: string;
-  sankalp: string;
-  raag: string;
-  omkarTime: string;
-  alankarTime: string;
-}
-
-interface Session extends FormData {
-  loggedAt?: string;
-}
-
 interface StatusMessage {
   type: 'success' | 'error';
   message: string;
-}
-
-interface GoogleTokenResponse {
-  access_token?: string;
-  error?: string;
-  error_description?: string;
-}
-
-interface GoogleTokenClient {
-  callback?: (response: GoogleTokenResponse) => void;
-  requestAccessToken: (overrideConfig?: { prompt?: string }) => void;
-}
-
-declare global {
-  interface Window {
-    google?: {
-      accounts: {
-        oauth2: {
-          initTokenClient: (config: {
-            client_id: string;
-            scope: string;
-            callback: (response: GoogleTokenResponse) => void;
-          }) => GoogleTokenClient;
-        };
-      };
-    };
-  }
 }
 
 const emptyFormData = (): FormData => ({
@@ -112,129 +49,6 @@ const readLocalSessions = (): Session[] => {
 
 const writeLocalSessions = (sessions: Session[]) => {
   localStorage.setItem(LOCAL_SESSIONS_KEY, JSON.stringify(sessions));
-};
-
-const toSheetRow = (session: Session) => [
-  session.date,
-  session.minutes,
-  session.whatPracticed,
-  session.sankalp,
-  session.raag,
-  session.omkarTime,
-  session.alankarTime,
-];
-
-const loadGoogleIdentity = () =>
-  new Promise<void>((resolve, reject) => {
-    if (window.google?.accounts?.oauth2) {
-      resolve();
-      return;
-    }
-
-    const existingScript = document.querySelector<HTMLScriptElement>(`script[src="${GOOGLE_IDENTITY_SCRIPT}"]`);
-    if (existingScript) {
-      existingScript.addEventListener('load', () => resolve(), { once: true });
-      existingScript.addEventListener('error', () => reject(new Error('Failed to load Google Identity Services')), { once: true });
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = GOOGLE_IDENTITY_SCRIPT;
-    script.async = true;
-    script.defer = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Failed to load Google Identity Services'));
-    document.head.appendChild(script);
-  });
-
-const getSheetsAccessToken = async () => {
-  if (!googleConfig.clientId) {
-    throw new Error('Missing VITE_GOOGLE_CLIENT_ID');
-  }
-
-  await loadGoogleIdentity();
-
-  return new Promise<string>((resolve, reject) => {
-    const client = window.google?.accounts.oauth2.initTokenClient({
-      client_id: googleConfig.clientId,
-      scope: SHEETS_SCOPE,
-      callback: (response) => {
-        if (response.access_token) {
-          resolve(response.access_token);
-          return;
-        }
-        reject(new Error(response.error_description || response.error || 'Google authorization failed'));
-      },
-    });
-
-    if (!client) {
-      reject(new Error('Google Identity Services is unavailable'));
-      return;
-    }
-
-    client.requestAccessToken({ prompt: '' });
-  });
-};
-
-const appendToGoogleSheet = async (session: Session) => {
-  if (!googleConfig.spreadsheetId) {
-    throw new Error('Missing VITE_GOOGLE_SPREADSHEET_ID');
-  }
-
-  const accessToken = await getSheetsAccessToken();
-  const encodedRange = encodeURIComponent(googleConfig.sheetRange);
-  const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${googleConfig.spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ values: [toSheetRow(session)] }),
-    },
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || 'Google Sheets append failed');
-  }
-};
-
-const submitGoogleForm = async (session: Session) => {
-  if (!googleConfig.formActionUrl) {
-    throw new Error('Missing VITE_GOOGLE_FORM_ACTION_URL');
-  }
-
-  const [dateYear = '', dateMonth = '', dateDay = ''] = session.date.split('-');
-  const valuesByKey: Record<keyof typeof googleConfig.formFields, string> = {
-    mksmNumber: googleConfig.formProfile.mksmNumber,
-    firstName: googleConfig.formProfile.firstName,
-    lastName: googleConfig.formProfile.lastName,
-    email: googleConfig.formProfile.email,
-    batchName: googleConfig.formProfile.batchName,
-    dateYear,
-    dateMonth,
-    dateDay,
-    minutes: session.minutes,
-    whatPracticed: session.whatPracticed,
-    sankalp: session.sankalp,
-  };
-
-  const payload = new FormData();
-  Object.entries(googleConfig.formFields).forEach(([key, entryId]) => {
-    if (entryId) payload.append(entryId, valuesByKey[key as keyof typeof googleConfig.formFields] || '');
-  });
-
-  if (Array.from(payload.keys()).length === 0) {
-    throw new Error('Missing Google Form field ids');
-  }
-
-  await fetch(googleConfig.formActionUrl, {
-    method: 'POST',
-    mode: 'no-cors',
-    body: payload,
-  });
 };
 
 export default function App() {
@@ -332,7 +146,7 @@ export default function App() {
       if (!googleSheetsConfigured) {
         throw new Error('Google Sheets is not configured');
       }
-      await appendToGoogleSheet(session);
+      await appendToGoogleSheet(googleConfig, session);
       sheetsMessage = { type: 'success', message: '✅ Logged to Google Sheets' };
     } catch (err) {
       console.error('Sheets submit error:', err);
@@ -344,7 +158,7 @@ export default function App() {
       if (!googleFormConfigured) {
         throw new Error('Google Form is not configured');
       }
-      await submitGoogleForm(session);
+      await submitGoogleForm(googleConfig, session);
       formsMessage = { type: 'success', message: '✅ Submitted to Google Form' };
     } catch (err) {
       console.error('Forms submit error:', err);

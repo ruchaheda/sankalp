@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+changed_files=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if echo "$changed_files" | grep -Eq '^(src/App\.tsx|src/googleSubmission\.ts|src/googleSubmission\.test\.ts|package\.json)$'; then
+  echo "Running submission tests..."
+  npm test
+fi
