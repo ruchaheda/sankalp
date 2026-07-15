@@ -3,7 +3,7 @@
 set -e
 
 echo "Building..."
-bun run build
+npm run build
 
 echo "Deploying to gh-pages..."
 cd dist
