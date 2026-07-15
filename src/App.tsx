@@ -1,8 +1,36 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Music, Heart, CheckCircle, AlertCircle, Loader, Download, Upload } from 'lucide-react';
 
-const ZO_API = 'https://rucha.zo.space';
-const CACHE_KEY = 'sankalp_sessions_cache';
+const LOCAL_SESSIONS_KEY = 'sankalp_sessions';
+const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
+const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+
+const googleConfig = {
+  clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
+  spreadsheetId: import.meta.env.VITE_GOOGLE_SPREADSHEET_ID || '',
+  sheetRange: import.meta.env.VITE_GOOGLE_SHEET_RANGE || 'Sessions!A:G',
+  formActionUrl: import.meta.env.VITE_GOOGLE_FORM_ACTION_URL || '',
+  formProfile: {
+    mksmNumber: import.meta.env.VITE_GOOGLE_FORM_MKSM_NUMBER || '',
+    firstName: import.meta.env.VITE_GOOGLE_FORM_FIRST_NAME || '',
+    lastName: import.meta.env.VITE_GOOGLE_FORM_LAST_NAME || '',
+    email: import.meta.env.VITE_GOOGLE_FORM_EMAIL || '',
+    batchName: import.meta.env.VITE_GOOGLE_FORM_BATCH_NAME || '',
+  },
+  formFields: {
+    mksmNumber: 'entry.1742760532',
+    firstName: 'entry.1992748701',
+    lastName: 'entry.1182588695',
+    email: 'entry.1838437624',
+    batchName: 'entry.2040019182',
+    dateYear: 'entry.737772668_year',
+    dateMonth: 'entry.737772668_month',
+    dateDay: 'entry.737772668_day',
+    minutes: 'entry.1586397793',
+    whatPracticed: 'entry.193868850',
+    sankalp: 'entry.1865891008',
+  },
+};
 
 const theme = {
   background: 'linear-gradient(135deg, #FFF5F7 0%, #F0E6FF 50%, #E0F4FF 100%)',
@@ -27,14 +55,8 @@ interface FormData {
   alankarTime: string;
 }
 
-interface Session {
-  date: string;
-  minutes: string;
-  whatPracticed: string;
-  sankalp: string;
-  raag: string;
-  omkarTime: string;
-  alankarTime: string;
+interface Session extends FormData {
+  loggedAt?: string;
 }
 
 interface StatusMessage {
@@ -42,16 +64,181 @@ interface StatusMessage {
   message: string;
 }
 
-export default function App() {
-  const [formData, setFormData] = useState<FormData>({
-    date: new Date().toISOString().split('T')[0],
-    minutes: '',
-    whatPracticed: '',
-    sankalp: '',
-    raag: '',
-    omkarTime: '',
-    alankarTime: '',
+interface GoogleTokenResponse {
+  access_token?: string;
+  error?: string;
+  error_description?: string;
+}
+
+interface GoogleTokenClient {
+  callback?: (response: GoogleTokenResponse) => void;
+  requestAccessToken: (overrideConfig?: { prompt?: string }) => void;
+}
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        oauth2: {
+          initTokenClient: (config: {
+            client_id: string;
+            scope: string;
+            callback: (response: GoogleTokenResponse) => void;
+          }) => GoogleTokenClient;
+        };
+      };
+    };
+  }
+}
+
+const emptyFormData = (): FormData => ({
+  date: new Date().toISOString().split('T')[0],
+  minutes: '',
+  whatPracticed: '',
+  sankalp: '',
+  raag: '',
+  omkarTime: '',
+  alankarTime: '',
+});
+
+const readLocalSessions = (): Session[] => {
+  try {
+    const sessions = JSON.parse(localStorage.getItem(LOCAL_SESSIONS_KEY) || '[]');
+    return Array.isArray(sessions) ? sessions : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeLocalSessions = (sessions: Session[]) => {
+  localStorage.setItem(LOCAL_SESSIONS_KEY, JSON.stringify(sessions));
+};
+
+const toSheetRow = (session: Session) => [
+  session.date,
+  session.minutes,
+  session.whatPracticed,
+  session.sankalp,
+  session.raag,
+  session.omkarTime,
+  session.alankarTime,
+];
+
+const loadGoogleIdentity = () =>
+  new Promise<void>((resolve, reject) => {
+    if (window.google?.accounts?.oauth2) {
+      resolve();
+      return;
+    }
+
+    const existingScript = document.querySelector<HTMLScriptElement>(`script[src="${GOOGLE_IDENTITY_SCRIPT}"]`);
+    if (existingScript) {
+      existingScript.addEventListener('load', () => resolve(), { once: true });
+      existingScript.addEventListener('error', () => reject(new Error('Failed to load Google Identity Services')), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = GOOGLE_IDENTITY_SCRIPT;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Google Identity Services'));
+    document.head.appendChild(script);
   });
+
+const getSheetsAccessToken = async () => {
+  if (!googleConfig.clientId) {
+    throw new Error('Missing VITE_GOOGLE_CLIENT_ID');
+  }
+
+  await loadGoogleIdentity();
+
+  return new Promise<string>((resolve, reject) => {
+    const client = window.google?.accounts.oauth2.initTokenClient({
+      client_id: googleConfig.clientId,
+      scope: SHEETS_SCOPE,
+      callback: (response) => {
+        if (response.access_token) {
+          resolve(response.access_token);
+          return;
+        }
+        reject(new Error(response.error_description || response.error || 'Google authorization failed'));
+      },
+    });
+
+    if (!client) {
+      reject(new Error('Google Identity Services is unavailable'));
+      return;
+    }
+
+    client.requestAccessToken({ prompt: '' });
+  });
+};
+
+const appendToGoogleSheet = async (session: Session) => {
+  if (!googleConfig.spreadsheetId) {
+    throw new Error('Missing VITE_GOOGLE_SPREADSHEET_ID');
+  }
+
+  const accessToken = await getSheetsAccessToken();
+  const encodedRange = encodeURIComponent(googleConfig.sheetRange);
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${googleConfig.spreadsheetId}/values/${encodedRange}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ values: [toSheetRow(session)] }),
+    },
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || 'Google Sheets append failed');
+  }
+};
+
+const submitGoogleForm = async (session: Session) => {
+  if (!googleConfig.formActionUrl) {
+    throw new Error('Missing VITE_GOOGLE_FORM_ACTION_URL');
+  }
+
+  const [dateYear = '', dateMonth = '', dateDay = ''] = session.date.split('-');
+  const valuesByKey: Record<keyof typeof googleConfig.formFields, string> = {
+    mksmNumber: googleConfig.formProfile.mksmNumber,
+    firstName: googleConfig.formProfile.firstName,
+    lastName: googleConfig.formProfile.lastName,
+    email: googleConfig.formProfile.email,
+    batchName: googleConfig.formProfile.batchName,
+    dateYear,
+    dateMonth,
+    dateDay,
+    minutes: session.minutes,
+    whatPracticed: session.whatPracticed,
+    sankalp: session.sankalp,
+  };
+
+  const payload = new FormData();
+  Object.entries(googleConfig.formFields).forEach(([key, entryId]) => {
+    if (entryId) payload.append(entryId, valuesByKey[key as keyof typeof googleConfig.formFields] || '');
+  });
+
+  if (Array.from(payload.keys()).length === 0) {
+    throw new Error('Missing Google Form field ids');
+  }
+
+  await fetch(googleConfig.formActionUrl, {
+    method: 'POST',
+    mode: 'no-cors',
+    body: payload,
+  });
+};
+
+export default function App() {
+  const [formData, setFormData] = useState<FormData>(emptyFormData);
 
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<{ sheets: StatusMessage | null; forms: StatusMessage | null }>({
@@ -61,31 +248,25 @@ export default function App() {
   const [recentSessions, setRecentSessions] = useState<Session[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
 
+  const googleSheetsConfigured = Boolean(googleConfig.clientId && googleConfig.spreadsheetId);
+  const googleFormConfigured = useMemo(
+    () => Boolean(googleConfig.formActionUrl && Object.values(googleConfig.formFields).some(Boolean)),
+    [],
+  );
+
   useEffect(() => {
     fetchRecentSessions();
   }, []);
 
-  const fetchRecentSessions = async () => {
-    try {
-      const response = await fetch(`${ZO_API}/api/recent-sessions`);
-      if (response.ok) {
-        const data = await response.json();
-        const sessions = data.sessions || [];
-        setRecentSessions(sessions);
-        localStorage.setItem(CACHE_KEY, JSON.stringify(sessions));
-        return;
-      }
-    } catch {
-      // Zo is offline — fall through to cache
-    } finally {
-      setLoadingRecent(false);
-    }
+  const fetchRecentSessions = () => {
+    setRecentSessions(readLocalSessions().slice(0, 10));
+    setLoadingRecent(false);
+  };
 
-    // Fall back to last-known sessions from cache
-    try {
-      const cached = localStorage.getItem(CACHE_KEY);
-      if (cached) setRecentSessions(JSON.parse(cached));
-    } catch { /* ignore */ }
+  const saveLocalSession = (session: Session) => {
+    const sessions = [session, ...readLocalSessions()];
+    writeLocalSessions(sessions);
+    setRecentSessions(sessions.slice(0, 10));
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -94,7 +275,7 @@ export default function App() {
   };
 
   const exportToJSON = () => {
-    const sessions = JSON.parse(localStorage.getItem('sankalp_sessions') || '[]');
+    const sessions = readLocalSessions();
     const dataStr = JSON.stringify({ sessions }, null, 2);
     const blob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -102,6 +283,7 @@ export default function App() {
     link.href = url;
     link.download = `sankalp-backup-${new Date().toISOString().split('T')[0]}.json`;
     link.click();
+    URL.revokeObjectURL(url);
   };
 
   const importFromJSON = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -112,8 +294,8 @@ export default function App() {
     reader.onload = (e) => {
       try {
         const data = JSON.parse(e.target?.result as string);
-        const sessions = data.sessions || [];
-        localStorage.setItem('sankalp_sessions', JSON.stringify(sessions));
+        const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+        writeLocalSessions(sessions);
         fetchRecentSessions();
         setMessages({
           sheets: { type: 'success', message: '✅ Data imported successfully' },
@@ -128,6 +310,7 @@ export default function App() {
       }
     };
     reader.readAsText(file);
+    event.target.value = '';
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -135,46 +318,43 @@ export default function App() {
     setLoading(true);
     setMessages({ sheets: null, forms: null });
 
-    try {
-      const response = await fetch(`${ZO_API}/api/submit-practice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      });
+    const session: Session = {
+      ...formData,
+      loggedAt: new Date().toISOString(),
+    };
 
-      if (response.ok) {
-        const result = await response.json();
-        setMessages({
-          sheets: result.sheetsSubmitted !== false
-            ? { type: 'success', message: '✅ Logged to Google Sheets' }
-            : { type: 'error', message: '❌ Failed to log to Google Sheets' },
-          forms: result.formsSubmitted !== false
-            ? { type: 'success', message: '✅ Submitted to Google Form' }
-            : { type: 'error', message: result.formsError ? `❌ ${result.formsError}` : '❌ Failed to submit to Google Form' },
-        });
-      } else {
-        throw new Error('Non-OK response');
+    let sheetsMessage: StatusMessage;
+    let formsMessage: StatusMessage;
+
+    saveLocalSession(session);
+
+    try {
+      if (!googleSheetsConfigured) {
+        throw new Error('Google Sheets is not configured');
       }
-    } catch {
-      // Zo is offline — save locally so data isn't lost
-      setMessages({
-        sheets: { type: 'error', message: '📴 Zo offline — saved locally on this device' },
-        forms: null,
-      });
+      await appendToGoogleSheet(session);
+      sheetsMessage = { type: 'success', message: '✅ Logged to Google Sheets' };
+    } catch (err) {
+      console.error('Sheets submit error:', err);
+      const detail = err instanceof Error ? err.message : 'Unknown error';
+      sheetsMessage = { type: 'error', message: `❌ Sheets not updated — saved locally (${detail})` };
     }
 
-    setFormData({
-      date: new Date().toISOString().split('T')[0],
-      minutes: '',
-      whatPracticed: '',
-      sankalp: '',
-      raag: '',
-      omkarTime: '',
-      alankarTime: '',
-    });
+    try {
+      if (!googleFormConfigured) {
+        throw new Error('Google Form is not configured');
+      }
+      await submitGoogleForm(session);
+      formsMessage = { type: 'success', message: '✅ Submitted to Google Form' };
+    } catch (err) {
+      console.error('Forms submit error:', err);
+      const detail = err instanceof Error ? err.message : 'Unknown error';
+      formsMessage = { type: 'error', message: `❌ Form not submitted (${detail})` };
+    }
 
+    setMessages({ sheets: sheetsMessage, forms: formsMessage });
+    setFormData(emptyFormData());
     setLoading(false);
-    fetchRecentSessions();
   };
 
   return (
@@ -407,7 +587,7 @@ export default function App() {
               ) : (
                 <div className="space-y-3">
                   {recentSessions.map((session, idx) => (
-                    <div key={idx} className="p-3 rounded-lg" style={{ background: theme.pastelLavender }}>
+                    <div key={`${session.loggedAt || session.date}-${idx}`} className="p-3 rounded-lg" style={{ background: theme.pastelLavender }}>
                       <div className="flex justify-between items-start mb-1">
                         <span className="font-semibold" style={{ color: theme.textDark }}>
                           {session.date}
