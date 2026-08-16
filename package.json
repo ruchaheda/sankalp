@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:apps-script": "tsc && vite build --mode apps-script && node scripts/build-apps-script.mjs",
     "preview": "vite preview",
     "test": "vitest run"
   },

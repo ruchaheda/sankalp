@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Music, Heart, CheckCircle, AlertCircle, Loader, Download, Upload } from 'lucide-react';
-import {
-  appendToGoogleSheet,
-  googleConfig,
-  submitGoogleForm,
-  type FormData,
-  type Session,
-} from './googleSubmission';
+import { isAppsScriptHosted, submitPractice, type AppsScriptSession } from './appsScriptClient';
+import type { FormData, Session } from './googleSubmission';
+import BackfillView from './BackfillView';
 
 const LOCAL_SESSIONS_KEY = 'sankalp_sessions';
 
@@ -53,6 +49,7 @@ const writeLocalSessions = (sessions: Session[]) => {
 
 export default function App() {
   const [formData, setFormData] = useState<FormData>(emptyFormData);
+  const [activeView, setActiveView] = useState<'log' | 'backfill'>('log');
 
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<{ sheets: StatusMessage | null; forms: StatusMessage | null }>({
@@ -62,11 +59,7 @@ export default function App() {
   const [recentSessions, setRecentSessions] = useState<Session[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
 
-  const googleSheetsConfigured = Boolean(googleConfig.clientId && googleConfig.spreadsheetId);
-  const googleFormConfigured = useMemo(
-    () => Boolean(googleConfig.formActionUrl && Object.values(googleConfig.formFields).some(Boolean)),
-    [],
-  );
+  const appsScriptHosted = useMemo(isAppsScriptHosted, []);
 
   useEffect(() => {
     fetchRecentSessions();
@@ -132,42 +125,50 @@ export default function App() {
     setLoading(true);
     setMessages({ sheets: null, forms: null });
 
-    const session: Session = {
+    const session: AppsScriptSession = {
       ...formData,
+      submissionId: crypto.randomUUID(),
       loggedAt: new Date().toISOString(),
     };
-
-    let sheetsMessage: StatusMessage;
-    let formsMessage: StatusMessage;
 
     saveLocalSession(session);
 
     try {
-      if (!googleSheetsConfigured) {
-        throw new Error('Google Sheets is not configured');
+      if (!appsScriptHosted) {
+        throw new Error('Open the deployed Apps Script web app URL');
       }
-      await appendToGoogleSheet(googleConfig, session);
-      sheetsMessage = { type: 'success', message: '✅ Logged to Google Sheets' };
+      const result = await submitPractice(session);
+      const detail = result.error ? ` (${result.error})` : '';
+      setMessages({
+        sheets: {
+          type: result.sheetSubmitted ? 'success' : 'error',
+          message: result.sheetSubmitted
+            ? '✅ Logged to Google Sheets'
+            : result.alertEmailSent
+              ? `❌ Google Sheet not updated — alert email sent${detail}`
+              : `❌ Google Sheet not updated — alert email also failed${detail}`,
+        },
+        forms: {
+          type: result.formSubmitted ? 'success' : 'error',
+          message: result.formSubmitted
+            ? '✅ Submitted to Google Form'
+            : result.formStatus === 'unknown'
+              ? `⚠️ Google Form status unknown${detail}`
+              : `❌ Google Form not submitted${detail}`,
+        },
+      });
+      if (result.formSubmitted && result.sheetSubmitted) {
+        setFormData(emptyFormData());
+      }
     } catch (err) {
-      console.error('Sheets submit error:', err);
+      console.error('Apps Script submit error:', err);
       const detail = err instanceof Error ? err.message : 'Unknown error';
-      sheetsMessage = { type: 'error', message: `❌ Sheets not updated — saved locally (${detail})` };
+      setMessages({
+        sheets: { type: 'error', message: `❌ Google Sheet status unknown — saved locally (${detail})` },
+        forms: { type: 'error', message: `❌ Google Form status unknown (${detail})` },
+      });
     }
 
-    try {
-      if (!googleFormConfigured) {
-        throw new Error('Google Form is not configured');
-      }
-      await submitGoogleForm(googleConfig, session);
-      formsMessage = { type: 'success', message: '✅ Submitted to Google Form' };
-    } catch (err) {
-      console.error('Forms submit error:', err);
-      const detail = err instanceof Error ? err.message : 'Unknown error';
-      formsMessage = { type: 'error', message: `❌ Form not submitted (${detail})` };
-    }
-
-    setMessages({ sheets: sheetsMessage, forms: formsMessage });
-    setFormData(emptyFormData());
     setLoading(false);
   };
 
@@ -186,9 +187,29 @@ export default function App() {
           <p style={{ color: theme.textDark }} className="text-sm opacity-80">
             Track your practice journey 🎵
           </p>
+          <div className="mt-4 flex justify-center gap-2">
+            <button onClick={() => setActiveView('log')}
+              className="px-4 py-2 rounded-full text-sm font-bold transition-all"
+              style={{
+                background: activeView === 'log' ? theme.accentPurple : 'rgba(255,255,255,.65)',
+                color: activeView === 'log' ? 'white' : theme.textDark,
+              }}>
+              Log Practice
+            </button>
+            <button onClick={() => setActiveView('backfill')}
+              className="px-4 py-2 rounded-full text-sm font-bold transition-all"
+              style={{
+                background: activeView === 'backfill' ? theme.accentPink : 'rgba(255,255,255,.65)',
+                color: activeView === 'backfill' ? 'white' : theme.textDark,
+              }}>
+              Backfill Missing Entries
+            </button>
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {activeView === 'backfill' && <BackfillView />}
+
+        <div className={activeView === 'log' ? 'grid grid-cols-1 lg:grid-cols-3 gap-6' : 'hidden'}>
           {/* Form Section */}
           <div className="lg:col-span-2">
             {/* Status Messages */}
